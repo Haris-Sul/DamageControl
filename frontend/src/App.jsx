@@ -9,12 +9,12 @@ const ARCHETYPES = [
 ];
 
 const ACTIONS = [
-  { id: 'No Comment', label: 'No Comment', desc: 'Maintain silence. (+Neutrality, -Transparency)', color: 'bg-slate-600' },
-  { id: 'Public Apology', label: 'Issue Apology', desc: 'Admit fault. (+Reputation, -Price)', color: 'bg-blue-700' },
-  { id: 'Deny Responsibility', label: 'Deny Responsibility', desc: 'Fight the claim. (+Price, -Reputation)', color: 'bg-red-700' },
-  { id: 'Advise Buyback', label: 'Advise Buyback', desc: 'Company buys shares. (+Price, -Reputation)', color: 'bg-emerald-700' },
-  { id: 'Advise Dilution', label: 'Advise Dilution', desc: 'Sell shares for cash. (-Price, +Reputation)', color: 'bg-orange-700' },
-  { id: 'Leadership Shakeup', label: 'Leadership Shakeup', desc: 'Replace executives. (High Volatility)', color: 'bg-purple-700' },
+  { id: 'Monitor Situation', label: 'Monitor Situation', desc: 'Observe market. Issue statement if needed.', color: 'bg-slate-600' },
+  { id: 'Public Apology', label: 'Issue Apology', desc: 'Formal admission of fault.', color: 'bg-blue-700' },
+  { id: 'Deny Responsibility', label: 'Deny Responsibility', desc: 'Contest the narrative.', color: 'bg-red-700' },
+  { id: 'Advise Buyback', label: 'Advise Buyback', desc: 'Repurchase shares to boost price.', color: 'bg-emerald-700' },
+  { id: 'Advise Dilution', label: 'Advise Dilution', desc: 'Raise capital via share sale.', color: 'bg-orange-700' },
+  { id: 'Leadership Shakeup', label: 'Leadership Shakeup', desc: 'Replace key executives.', color: 'bg-purple-700' },
 ];
 
 const App = () => {
@@ -24,14 +24,16 @@ const App = () => {
   const [round, setRound] = useState(0);
   const [gameState, setGameState] = useState(null);
   const [statement, setStatement] = useState('');
-  const [prevPrice, setPrevPrice] = useState(100);
+  
+  // Track previous state for Deltas
+  const [prevStats, setPrevStats] = useState({ price: 100, rep: 50 });
 
   const startGame = async (type) => {
     setLoading(true);
     try {
       const res = await api.post('/api/start', { archetype: type });
       setGameState(res.data);
-      setPrevPrice(res.data.share_price);
+      setPrevStats({ price: res.data.share_price, rep: res.data.reputation });
       setRound(1);
       setView('game');
     } catch (err) {
@@ -44,19 +46,30 @@ const App = () => {
   const submitTurn = async (actionId) => {
     if (loading) return;
     setLoading(true);
+    
+    // send explicit NO COMMENT signal if Monitor is chosen with empty statement
+    let finalStatement = statement;
+    if (actionId === 'Monitor Situation' && statement.trim() === '') {
+        finalStatement = ''; // Backend treats empty string + Monitor as "Silence"
+    }
+
     try {
+      // Save current stats before update
+      setPrevStats({ 
+        price: gameState.share_price, 
+        rep: gameState.reputation 
+      });
+
       const res = await api.post('/api/turn', {
-        statement: actionId === 'No Comment' ? '[NO COMMENT]' : statement,
+        statement: finalStatement,
         action_id: actionId,
         current_state: { ...gameState, round }
       });
       
-      setPrevPrice(gameState.share_price);
       setGameState(res.data);
       setRound(prev => prev + 1);
       setStatement('');
 
-      // End Game Logic: Round 12 or Bankruptcy
       if (res.data.share_price < 10 || res.data.reputation < 5 || round >= 12) {
         setView('over');
       }
@@ -67,17 +80,58 @@ const App = () => {
     }
   };
 
+  // Helper for Delta rendering
+  const Delta = ({ current, prev, isPercent = false }) => {
+    const diff = current - prev;
+    if (Math.abs(diff) < 0.01) return <span className="text-slate-600 text-xs ml-2">-</span>;
+    const color = diff > 0 ? 'text-emerald-400' : 'text-red-400';
+    const sign = diff > 0 ? '+' : '';
+    return (
+        <span className={`${color} text-xs font-mono ml-2`}>
+            ({sign}{isPercent ? diff.toFixed(0) : diff.toFixed(2)}{isPercent ? '%' : ''})
+        </span>
+    );
+  };
+
+  // Helper for Analyst Rating Color
+  const getRatingColor = (rating) => {
+      const r = rating?.toLowerCase() || '';
+      if (r.includes('buy')) return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50';
+      if (r.includes('sell')) return 'bg-red-500/20 text-red-400 border-red-500/50';
+      return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/50'; // Hold
+  };
+
   if (view === 'new') return (
     <div className="min-h-screen bg-slate-950 text-slate-200 flex flex-col items-center justify-center p-6 font-sans">
       <div className="max-w-4xl w-full">
-        <h1 className="text-4xl font-bold mb-2 tracking-tight text-white">DAMAGE CONTROL</h1>
-        <p className="mb-8 text-slate-400">Corporate Events Simulator v1.0</p>
+        <h1 className="text-5xl font-bold mb-2 tracking-tight text-white">DAMAGE CONTROL</h1>
+        <p className="mb-8 text-slate-400">Corporate Strategy Simulator v2.0</p>
+        
+        {/* MISSION BRIEF */}
+        <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl mb-8 flex gap-8">
+            <div className="flex-1">
+                <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Mission Parameters</h3>
+                <ul className="text-sm text-slate-300 space-y-2">
+                    <li>• Survive 12 Fiscal Months (Rounds).</li>
+                    <li>• Manage Stakeholder Sentiment (Public, Investors, Employees).</li>
+                    <li>• React to market rumors and unforeseen events.</li>
+                </ul>
+            </div>
+            <div className="flex-1 border-l border-slate-800 pl-8">
+                <h3 className="text-xs font-bold text-emerald-500 uppercase tracking-widest mb-2">Victory Criteria</h3>
+                <ul className="text-sm text-slate-300 space-y-2 font-mono">
+                    <li>VALUATION  &gt; £100,000</li>
+                    <li>REPUTATION &gt; 50%</li>
+                </ul>
+            </div>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {ARCHETYPES.map(a => (
             <button 
               key={a.id} 
               onClick={() => startGame(a.id)}
-              className="p-6 bg-slate-900 border border-slate-800 hover:border-emerald-500 rounded-lg transition-all text-left group"
+              className="p-6 bg-slate-900 border border-slate-800 hover:border-emerald-500 hover:bg-slate-800 rounded-lg transition-all text-left group"
             >
               <div className="flex justify-between items-center mb-2">
                 <span className="text-2xl">{a.icon}</span>
@@ -104,28 +158,20 @@ const App = () => {
             <div className={`text-3xl font-mono ${gameState.share_price * 1000 >= 100000 ? 'text-emerald-400' : 'text-red-400'}`}>
               £{(gameState.share_price * 1000).toLocaleString()}
             </div>
-            <div className="text-xs text-slate-600 mt-2">Target: £100,000</div>
           </div>
           <div className="p-4 bg-slate-950 rounded-lg">
             <div className="text-xs text-slate-500 uppercase mb-1">Final Reputation</div>
             <div className={`text-3xl font-mono ${gameState.reputation >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>
               {gameState.reputation}%
             </div>
-            <div className="text-xs text-slate-600 mt-2">Target: 50%</div>
           </div>
-        </div>
-
-        <div className="mb-8 text-slate-400 italic">
-          "{gameState.share_price * 1000 >= 100000 && gameState.reputation >= 50 
-            ? "The board is impressed. Your contract has been renewed." 
-            : "Performance targets missed. The board has requested your resignation."}"
         </div>
 
         <button 
           onClick={() => { setView('new'); setGameState(null); }}
           className="px-8 py-3 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-lg transition-colors"
         >
-          NEW FISCAL YEAR
+          START NEW YEAR
         </button>
       </div>
     </div>
@@ -133,7 +179,7 @@ const App = () => {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-300 p-4 font-sans">
-      {/* HEADER / DASHBOARD */}
+      {/* HEADER */}
       <div className="max-w-7xl mx-auto mb-6 bg-slate-900 border-b border-slate-800 p-4 rounded-lg flex flex-wrap justify-between items-center shadow-lg">
         <div className="flex items-center gap-4">
             <div className="h-10 w-10 bg-slate-800 rounded flex items-center justify-center text-xl">
@@ -141,26 +187,44 @@ const App = () => {
             </div>
             <div>
                 <h1 className="text-sm font-bold text-slate-500 uppercase tracking-widest">Damage Control</h1>
-                <div className="text-white font-bold">Round {round} / 12</div>
+                <div className="flex items-center gap-2">
+                    <span className="text-white font-bold">Round {round} / 12</span>
+                    {/* Analyst Rating Badge */}
+                    {gameState?.analyst_rating && (
+                        <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${getRatingColor(gameState.analyst_rating)}`}>
+                            {gameState.analyst_rating}
+                        </span>
+                    )}
+                </div>
             </div>
         </div>
 
         <div className="flex gap-8 text-right">
              <div>
                 <div className="text-xs text-slate-500 uppercase font-bold">Share Price</div>
-                <div className={`text-2xl font-mono ${gameState?.share_price >= prevPrice ? 'text-emerald-400' : 'text-red-400'}`}>
-                    £{gameState?.share_price.toFixed(2)}
+                <div className="flex items-baseline justify-end">
+                    <span className={`text-2xl font-mono ${gameState?.share_price >= 100 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        £{gameState?.share_price.toFixed(2)}
+                    </span>
+                    <Delta current={gameState?.share_price} prev={prevStats.price} />
                 </div>
             </div>
             <div>
                 <div className="text-xs text-slate-500 uppercase font-bold">Valuation</div>
-                <div className="text-2xl font-mono text-slate-200">
-                    £{(gameState?.share_price * 1000).toLocaleString()}
+                <div className="flex items-baseline justify-end">
+                    <span className={`text-2xl font-mono ${gameState?.share_price * 1000 >= 100000 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        £{(gameState?.share_price * 1000).toLocaleString()}
+                    </span>
                 </div>
             </div>
             <div>
                 <div className="text-xs text-slate-500 uppercase font-bold">Reputation</div>
-                <div className="text-2xl font-mono text-blue-400">{gameState?.reputation}%</div>
+                <div className="flex items-baseline justify-end">
+                    <span className={`text-2xl font-mono ${gameState?.reputation >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {gameState?.reputation}%
+                    </span>
+                    <Delta current={gameState?.reputation} prev={prevStats.rep} isPercent={true} />
+                </div>
             </div>
         </div>
       </div>
@@ -169,18 +233,19 @@ const App = () => {
         
         {/* LEFT: Event & Controls */}
         <div className="lg:col-span-8 space-y-6">
-          {/* Event Card (Toned down) */}
           <div className="bg-slate-900 border border-slate-800 p-8 rounded-lg shadow-sm">
              <div className="flex items-center gap-2 mb-4">
                 <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Current Event</span>
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Current Situation</span>
              </div>
              <h2 className="text-2xl font-bold text-white mb-4">{gameState?.headline}</h2>
              <p className="text-lg text-slate-300 leading-relaxed">{gameState?.narrative}</p>
              
-             {gameState?.next_event && round > 0 && (
-                 <div className="mt-6 pt-4 border-t border-slate-800 flex gap-2 text-sm text-slate-500">
-                    <span className="font-bold">FORECAST:</span> {gameState.next_event}
+             {/* Forecast / Market Rumor */}
+             {gameState?.market_rumor && (
+                 <div className="mt-6 pt-4 border-t border-slate-800 flex gap-2 text-sm text-slate-500 items-start">
+                    <span className="font-bold text-indigo-400 shrink-0">MARKET CHATTER:</span> 
+                    <span className="italic">"{gameState.market_rumor}"</span>
                  </div>
              )}
           </div>
@@ -188,12 +253,12 @@ const App = () => {
           {/* Controls */}
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-lg">
             <div className="mb-6">
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Public Statement</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Public Statement / Press Release</label>
                 <textarea 
                   value={statement}
                   onChange={(e) => setStatement(e.target.value)}
-                  placeholder="Draft your statement here..."
-                  className="w-full bg-slate-950 border border-slate-700 rounded p-3 text-slate-200 focus:border-emerald-500 focus:outline-none h-24 resize-none"
+                  placeholder="Draft your statement here. Leave blank to remain silent."
+                  className="w-full bg-slate-950 border border-slate-700 rounded p-3 text-slate-200 focus:border-emerald-500 focus:outline-none h-24 resize-none placeholder:text-slate-600"
                 />
             </div>
 
@@ -203,10 +268,10 @@ const App = () => {
                         key={act.id}
                         onClick={() => submitTurn(act.id)}
                         disabled={loading}
-                        className={`${act.color} hover:brightness-110 p-3 rounded text-left transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
+                        className={`${act.color} hover:brightness-110 p-3 rounded text-left transition-all disabled:opacity-50 disabled:cursor-not-allowed group`}
                     >
                         <div className="font-bold text-white text-sm">{act.label}</div>
-                        <div className="text-xs text-white/70 mt-1">{act.desc}</div>
+                        <div className="text-xs text-white/70 mt-1 opacity-80 group-hover:opacity-100">{act.desc}</div>
                     </button>
                 ))}
             </div>
@@ -240,13 +305,9 @@ const App = () => {
                             </div>
                         </div>
                     ))}
-                    {!gameState?.stakeholder_feed && (
-                        <div className="text-center text-slate-600 text-sm mt-10">Awaiting market data...</div>
-                    )}
                 </div>
             </div>
         </div>
-
       </div>
     </div>
   );
