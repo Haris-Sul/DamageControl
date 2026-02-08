@@ -1,73 +1,92 @@
 import os
 import json
+import re
 import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from google import genai
+import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-# Setup Client
+# 1. Setup Client (Standard SDK)
 api_key = os.environ.get("GEMINI_API_KEY")
-client = genai.Client(api_key=api_key)
+if not api_key:
+    logging.error("❌ GEMINI_API_KEY not found!")
+genai.configure(api_key=api_key)
 
-MODEL_NAME = 'gemini-3-flash-preview' 
+# 2. MODEL SWITCH: 'gemma-3-27b-it'
+# Why: Gemini Flash is capped at 20 requests/day. Gemma 3 is often capped at ~14k/day.
+MODEL_NAME = 'models/gemma-3-27b-it'
 
 app = Flask(__name__)
 CORS(app)
 
 SYSTEM_PROMPT = """
 You are the engine for 'Damage Control', a corporate strategy simulator.
-Role: Logical, grounded corporate simulation.
+Output strictly in valid JSON format. Do not use Markdown code blocks.
 
-Game State Definitions:
-- Share Price: Starts at £100.
-- Valuation = Share Price * 1000. Goal: > £100,000.
-- Reputation: 0-100%. Goal: > 50%.
-- Analyst Rating: Sell / Hold / Buy / Strong Buy.
+Game Logic:
+- Share Price: Starts £100.
+- Valuation = Price * Total Shares.
+- Goal: Valuation > £100,000.
 
-Action Logic (Apply Strictly):
-1. "Monitor Situation": 
-   - IF Statement is EMPTY: Treat as "Silence/No Comment". (Neutral impact, or negative if in crisis).
-   - IF Statement EXISTS: Treat as "Press Release". Analyze the text content for impact. (Good for announcing positive news).
-2. "Advise Buyback": +Price, -Rep (Short term greed).
-3. "Advise Dilution": -Price, +Rep (Raising capital).
-4. "Deny/Apologize": Standard crisis management.
-
-Forecast Logic:
-- The 'market_rumor' should be a RUMOR. It might be true, it might be false.
-- Do not make the 'next_event' strictly follow the rumor every time. Surprise the player occasionally.
+Action Effects:
+1. "Advise Buyback": Reduce 'total_shares' by 50-100. Increase 'share_price'.
+2. "Advise Dilution": Increase 'total_shares' by 50-100. Decrease 'share_price'.
+3. "Monitor Situation": Neutral impact unless text is provided.
 
 JSON Structure Required:
 {
-  "narrative": "Professional situation report (max 2 sentences).",
-  "share_price": 105.50,
-  "reputation": 55,
+  "narrative": "Short text summary.",
+  "share_price": 100.0,
+  "total_shares": 1000, 
+  "reputation": 50,
   "analyst_rating": "Buy", 
-  "headline": "A Professional Business Headline",
+  "headline": "Short Headline",
   "stakeholder_feed": [
-    {"role": "Public", "name": "Name", "text": "...", "sentiment": -5},
-    {"role": "Investor", "name": "Name", "text": "...", "sentiment": 2},
-    {"role": "Employee", "name": "Name", "text": "...", "sentiment": 0}
+    {"role": "Public", "name": "User1", "text": "...", "sentiment": -5},
+    {"role": "Investor", "name": "Inv2", "text": "...", "sentiment": 2},
+    {"role": "Employee", "name": "Emp3", "text": "...", "sentiment": 0}
   ],
-  "market_rumor": "A rumor about what MIGHT happen next...",
-  "next_event_logic": "Hidden note on what actually happens next (can differ from rumor)"
+  "market_rumor": "A short rumor..."
 }
 """
 
-def call_gemini(prompt):
+def clean_json(text):
+    """
+    Gemma often adds markdown ```json ... ``` blocks. 
+    This removes them to prevent crashing.
+    """
+    # Remove markdown code blocks
+    text = re.sub(r'^```json\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^```\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\s*```$', '', text, flags=re.MULTILINE)
+    return text.strip()
+
+def call_ai(prompt):
     try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-            config={'response_mime_type': 'application/json'}
-        )
-        return json.loads(response.text)
+        model = genai.GenerativeModel(MODEL_NAME)
+        # NOTE: We DO NOT use response_mime_type='application/json' because Gemma doesn't support it.
+        # We rely on the prompt + clean_json() instead.
+        response = model.generate_content(prompt)
+        
+        cleaned_text = clean_json(response.text)
+        return json.loads(cleaned_text)
     except Exception as e:
-        logging.error(f"Gemini Error: {str(e)}")
-        raise e
+        logging.error(f"AI Error: {str(e)}")
+        # Return valid fallback data so the game doesn't crash
+        return {
+            "narrative": "The market data feed is currently unstable due to high volatility.",
+            "share_price": 100.0,
+            "total_shares": 1000,
+            "reputation": 50,
+            "analyst_rating": "Hold",
+            "headline": "MARKET INTERRUPTION",
+            "stakeholder_feed": [],
+            "market_rumor": "Data unavailable."
+        }
 
 @app.route('/api/start', methods=['POST'])
 def start_game():
@@ -75,26 +94,16 @@ def start_game():
         data = request.json
         archetype = data.get('archetype', 'Tech Unicorn')
         
-        # Generate Personas
-        persona_prompt = f"""
-        Generate 3 distinct stakeholder personas for a {archetype} company.
-        Return strictly JSON: {{ "public": {{ "name": "...", "trait": "..." }}, "investor": {{...}}, "employee": {{...}} }}
-        """
-        personas = call_gemini(persona_prompt)
-        
-        # Generate Round 0
         prompt = f"""
-        Player manages a {archetype}.
-        Personas: {json.dumps(personas)}.
-        Generate Round 0 Briefing. 
-        - Context: New fiscal year start.
-        - Share Price: 100. Rep: 50. Rating: Hold.
-        - rumor: "Quiet start expected."
+        Start a new game for a {archetype} company.
+        Generate 3 distinct personas (Public, Investor, Employee).
+        Set initial state: Price £100, Shares 1000, Rep 50.
         {SYSTEM_PROMPT}
         """
         
-        game_data = call_gemini(prompt)
-        game_data['personas'] = personas
+        game_data = call_ai(prompt)
+        # Store personas in the game data to pass back and forth (stateless)
+        game_data['archetype'] = archetype
         return jsonify(game_data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -104,25 +113,20 @@ def process_turn():
     try:
         data = request.json
         current_state = data.get('current_state', {})
-        personas = current_state.get('personas', {})
         
         prompt = f"""
-        Current State: {current_state}
-        Active Personas: {json.dumps(personas)}
-        
+        Current State: {json.dumps(current_state)}
         Player Action: {data.get('action_id')}
         Player Statement: "{data.get('statement')}"
         
         Task:
-        1. Calculate new Price (Base £100) and Rep (0-100).
-        2. Determine Analyst Rating (Sell/Hold/Buy).
-        3. Generate Reactions.
-        4. Generate NEXT event (use previous rumor as input, but decide if it happens or not).
+        1. Update 'share_price' and 'total_shares' based on Action.
+        2. Generate reactions.
+        3. Ensure valid JSON output.
         {SYSTEM_PROMPT}
         """
         
-        game_data = call_gemini(prompt)
-        game_data['personas'] = personas
+        game_data = call_ai(prompt)
         return jsonify(game_data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
